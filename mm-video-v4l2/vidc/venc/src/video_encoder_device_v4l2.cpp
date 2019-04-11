@@ -63,6 +63,10 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #define HYPERVISOR 0
 #endif
 
+#ifdef HYPERVISOR
+#define poll(x, y, z)  hypv_poll(x, y, z)
+#endif
+
 #define ALIGN(x, to_align) ((((unsigned long) x) + (to_align - 1)) & ~(to_align - 1))
 #define EXTRADATA_IDX(__num_planes) ((__num_planes) ? (__num_planes) - 1 : 0)
 #define MAXDPB 16
@@ -1306,58 +1310,6 @@ int venc_dev::venc_input_log_buffers(OMX_BUFFERHEADERTYPE *pbuffer, int fd, int 
     return 0;
 }
 
-static int async_message_process_v4l2 (void *context, void* message)
-{
-    int rc = 0;
-    struct v4l2_buffer *v4l2_buf=NULL;
-    OMX_BUFFERHEADERTYPE* omxhdr = NULL;
-    struct venc_msg *vencmsg = (venc_msg *)message;
-    venc_dev *vencdev = reinterpret_cast<venc_dev*>(context);
-    omx_venc *omx = vencdev->venc_handle;
-    omx_video *omx_venc_base = (omx_video *)vencdev->venc_handle;
-
-    if (VEN_MSG_OUTPUT_BUFFER_DONE == vencmsg->msgcode) {
-        v4l2_buf = (struct v4l2_buffer *)vencmsg->buf.clientdata;
-        omxhdr=omx_venc_base->m_out_mem_ptr+v4l2_buf->index;
-        vencmsg->buf.len= v4l2_buf->m.planes->bytesused;
-        vencmsg->buf.offset = v4l2_buf->m.planes->data_offset;
-        vencmsg->buf.flags = 0;
-        vencmsg->buf.ptrbuffer = (OMX_U8 *)omx_venc_base->m_pOutput_pmem[v4l2_buf->index].buffer;
-        vencmsg->buf.clientdata=(void*)omxhdr;
-        vencmsg->buf.timestamp = (uint64_t) v4l2_buf->timestamp.tv_sec * (uint64_t) 1000000 + (uint64_t) v4l2_buf->timestamp.tv_usec;
-        if (v4l2_buf->flags & V4L2_QCOM_BUF_FLAG_IDRFRAME)
-            vencmsg->buf.flags |= QOMX_VIDEO_PictureTypeIDR;
-
-        if (v4l2_buf->flags & V4L2_BUF_FLAG_KEYFRAME)
-            vencmsg->buf.flags |= OMX_BUFFERFLAG_SYNCFRAME;
-
-        if (v4l2_buf->flags & V4L2_QCOM_BUF_FLAG_CODECCONFIG)
-            vencmsg->buf.flags |= OMX_BUFFERFLAG_CODECCONFIG;
-
-        if (v4l2_buf->flags & V4L2_QCOM_BUF_FLAG_EOS)
-            vencmsg->buf.flags |= OMX_BUFFERFLAG_EOS;
-
-        if (vencdev->num_output_planes > 1 && v4l2_buf->m.planes->bytesused)
-            vencmsg->buf.flags |= OMX_BUFFERFLAG_EXTRADATA;
-
-        if (omxhdr->nFilledLen)
-            vencmsg->buf.flags |= OMX_BUFFERFLAG_ENDOFFRAME;
-        vencdev->fbd++;
-    } else if (VEN_MSG_INPUT_BUFFER_DONE == vencmsg->msgcode) {
-        v4l2_buf = (struct v4l2_buffer *)vencmsg->buf.clientdata;
-        vencdev->ebd++;
-        if (omx_venc_base->mUseProxyColorFormat && !omx_venc_base->mUsesColorConversion)
-            omxhdr = &omx_venc_base->meta_buffer_hdr[v4l2_buf->index];
-        else
-            omxhdr = &omx_venc_base->m_inp_mem_ptr[v4l2_buf->index];
-        vencmsg->buf.clientdata=(void*)omxhdr;
-        DEBUG_PRINT_LOW("sending EBD %p [id=%d]", omxhdr, v4l2_buf->index);
-    }
-    rc = omx->async_message_process((void *)omx, message);
-
-    return rc;
-}
-
 bool venc_dev::venc_open(OMX_U32 codec)
 {
     int r;
@@ -1378,10 +1330,7 @@ bool venc_dev::venc_open(OMX_U32 codec)
         supported_rc_modes = (RC_ALL & ~RC_CBR_CFR);
     }
     if (m_hypervisor) {
-        hvfe_callback_t hvfe_cb;
-        hvfe_cb.handler = async_message_process_v4l2;
-        hvfe_cb.context = (void *) this;
-        m_nDriver_fd = hypv_open(device_name, O_RDWR, &hvfe_cb);
+        m_nDriver_fd = hypv_open(device_name, O_RDWR);
     } else {
         m_nDriver_fd = open(device_name, O_RDWR);
     }
